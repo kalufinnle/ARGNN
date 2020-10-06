@@ -194,7 +194,8 @@ if __name__ == "__main__":
     parser.add_argument("--hidden-size", type=int, default=256)
     parser.add_argument("--dropout", type=float, default=0.5)
     parser.add_argument("--alpha", type=float, default=0.2, help='alpha in leakyrelu')
-    parser.add_argument("--nheads", type=int, default=1, help='attention head number')
+    parser.add_argument("--nheads", type=int, default=1, help='head number')
+    parser.add_argument("--attention_hid", type=int, default=1, help='attention head number')
     parser.add_argument("--max-degree", type=int, default=10)
 
     args = parser.parse_args()
