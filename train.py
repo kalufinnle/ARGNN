@@ -1,9 +1,6 @@
 import torch
 import numpy as np
 import copy
-from sklearn.manifold import TSNE
-import matplotlib.pyplot as plt
-from matplotlib.collections import LineCollection
 from ogb.nodeproppred import PygNodePropPredDataset
 from tqdm import tqdm
 import argparse
@@ -29,9 +26,6 @@ class data():
         self.train_mask = torch.from_numpy(self.train_mask)
         self.valid_mask = torch.from_numpy(self.valid_mask)
         self.test_mask = torch.from_numpy(self.test_mask)
-        # self.train_mask = self.train_mask.unsqueeze(1)
-        # self.valid_mask = self.valid_mask.unsqueeze(1)
-        # self.test_mask = self.test_mask.unsqueeze(1)
 
     def apply(self, param):
         # for x in self.
@@ -71,8 +65,6 @@ class NodeClassification():
         self.data = dataset
         self.data.apply(lambda x: x.to(self.device))
 
-        # train_idx, valid_idx, test_idx = split_idx["train"], split_idx["valid"], split_idx["test"]
-        # graph, label = dataset[0]
         args.num_features = dataset.num_features
         args.num_classes = dataset.num_classes
         if model is None:
@@ -85,7 +77,7 @@ class NodeClassification():
             self.model.parameters(), lr=args.lr, weight_decay=args.weight_decay
         )
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.98)
-        self.max_degree = 10
+        self.max_degree = args.max_degree
         self.adj_processed = self.construct_adj(self.data.edges, self.data.node_attr.size()[0])
         if self.device == torch.device('cuda'):
             self.adj_processed = self.adj_processed.cuda()
@@ -136,11 +128,7 @@ class NodeClassification():
         self.optimizer.zero_grad()
 
         loss = self.model.loss(self.data.node_attr, self.data.y, self.data.train_mask, self.adj_processed, self.max_degree)
-        # print("start backward")
         loss.backward()
-        # self.model.loss(self.data).backward()
-        # print("end backward")
-        # print([x.grad for x in self.optimizer.param_groups[0]['params']])
         self.optimizer.step()
         self.scheduler.step()
 
@@ -163,12 +151,6 @@ class NodeClassification():
     def construct_x(self):
         x = self.data.node_attr
         return x
-        # edge_index = self.data.edge_index
-        # new_x = self.data.x.clone()
-        # for edge in edge_index:
-        #     new_x[edge[0]] = torch.add(new_x[edge[0]], x[edge[1]])
-        #     # new_x[edge[1]] = torch.add(new_x[edge[1]], x[edge[0]])
-        # return new_x
 
 
     def construct_adj(self, adj_list, N):
@@ -181,9 +163,6 @@ class NodeClassification():
 
         adj = np.ones((N, self.max_degree), dtype=np.long)
         for nodeid in range(N):
-            # if len(neighbor[nodeid]) < self.max_degree:
-                # for i in range(self.max_degree - len(neighbor[nodeid])):
-                #     neighbor[nodeid].append(nodeid)
             neighbors = neighbor[nodeid]
 
             if len(neighbors) == 0:
@@ -194,7 +173,6 @@ class NodeClassification():
                 neighbors = np.random.choice(neighbors, self.max_degree-1, replace=False)
                 neighbors = np.append(neighbors, nodeid)
             elif len(neighbors) < self.max_degree-1:
-                # neighbors = np.random.choice(neighbors, self.max_degree, replace=True)
                 neighbors.append(nodeid)
                 for i in range(len(neighbors), self.max_degree):
                     neighbors.append(N)
@@ -206,25 +184,22 @@ class NodeClassification():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="gps args")  # fmt: off
-    # parser.add_argument("--num-features", type=int)
-    # parser.add_argument("--num-classes", type=int)
+
     parser.add_argument("--layers", type=int, default=2)
-    parser.add_argument("--dataset", type=str, default="us_airports")
+    parser.add_argument("--dataset", type=str, default="ogbn_arxiv")
     parser.add_argument('--cpu', action='store_true', help='use CPU instead of CUDA')
-    parser.add_argument('--max-epoch', default=500, type=int)
+    parser.add_argument('--max-epoch', default=1000, type=int)
     parser.add_argument("--patience", type=int, default=100)
     parser.add_argument('--lr', default=0.01, type=float)
-    parser.add_argument('--weight-decay', default=5e-4, type=float)
+    parser.add_argument('--weight-decay', default=0, type=float)
     parser.add_argument('--device-id', default=[0], type=int, nargs='+',
                         help='which GPU to use')
-    parser.add_argument("--num-features", type=int)
-    parser.add_argument("--num-classes", type=int)
-    parser.add_argument("--hidden-size", type=int, default=128)
+    parser.add_argument("--hidden-size", type=int, default=256)
     parser.add_argument("--dropout", type=float, default=0.5)
     parser.add_argument("--alpha", type=float, default=0.2)
-    parser.add_argument("--nheads", type=int, default=4)
+    parser.add_argument("--nheads", type=int, default=1)
+    parser.add_argument("--max-degree", type=int, default=10)
 
-    # GPS.add_args(parser)
     args = parser.parse_args()
     if torch.cuda.is_available() and not args.cpu:
         torch.cuda.set_device(args.device_id[0])

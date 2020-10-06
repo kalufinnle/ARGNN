@@ -1,8 +1,6 @@
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import time
 
 
 class SpecialSpmmFunction(torch.autograd.Function):
@@ -302,11 +300,6 @@ class GPS(nn.Module):
         x = torch.stack(y)
         x = x.sum(0)
         x = x[:N0, :]
-        # print(x.shape)
-        # x = x.reshape(-1, self.subheads, self.nclass)
-        # x = x.sum(1)
-        # print(x.shape)
-        # print(F.log_softmax(x,dim=1))
         return F.log_softmax(x, dim=1)
 
     def loss(self, datax, datay, train_mask, adj_processed, max_degree):
