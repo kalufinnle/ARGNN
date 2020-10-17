@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 
 
 class SpecialSpmmFunction(torch.autograd.Function):
@@ -37,20 +38,24 @@ class GPSAttentionLayer(nn.Module):
     Sparse version GAT layer, similar to https://arxiv.org/abs/1710.10903
     """
 
-    def __init__(self, in_features, out_features, dropout, alpha, concat=True,thickness=1, max_dis=3, k=100, attention_size = 16, GPU = False, need_norm = True):
+    def __init__(self, in_features, out_features, dropout, alpha, concat=True, thickness=1, max_dis=3, k=100,
+                 attention_size=16, GPU=False, need_norm=True):
         super(GPSAttentionLayer, self).__init__()
         self.GPU = GPU  # 是否使用GPU
         self.in_features = in_features
         self.out_features = out_features
         self.alpha = alpha
         self.attention_hid = 1  # 决定了attention的Wk Wq的shape
+        self.attention_size = attention_size
+
+        self.sqrtDk = math.sqrt(attention_size)
 
         self.W = nn.Parameter(torch.zeros(size=(thickness, in_features, out_features)))
         nn.init.xavier_normal_(self.W.data, gain=1.414)
 
-        self.Wk = nn.Parameter(torch.zeros(size=(in_features, self.attention_hid)))
+        self.Wk = nn.Parameter(torch.zeros(size=(in_features, self.attention_size)))
         nn.init.xavier_normal_(self.Wk, gain=1.414)
-        self.Wq = nn.Parameter(torch.zeros(size=(in_features, self.attention_hid)))
+        self.Wq = nn.Parameter(torch.zeros(size=(in_features, self.attention_size)))
         nn.init.xavier_normal_(self.Wq, gain=1.414)
 
         self.dropout = dropout
@@ -71,14 +76,13 @@ class GPSAttentionLayer(nn.Module):
         # 为了对不同阶邻居有所区分，对感受野中的不同阶邻居，线性变换的W不同
         # 再对感受野进行拓展。计算所有m+1阶邻居的attention，选取 top (num_recep)，加入感受野中。
         # --------------------------------------------------------------------------------
-
-        N = input.size()[0]         # 此时N为实际的N+1(多了一个special_id)
+        N = input.size()[0]  # 此时N为实际的N+1(多了一个special_id)
         Key = torch.mm(input, self.Wk)
         Query = torch.mm(input, self.Wq)
         num_degree = adj.size()[1]  # 每个点的邻居数
-        num_recep = adj.size()[1]   # 每种距离下，在感受野中的点的个数
+        num_recep = adj.size()[1]  # 每种距离下，在感受野中的点的个数
         k = min(self.k, num_recep)  # 每种距离下，选attention为top k的点进行聚合
-
+        # breakpoint()
         # 对h做线性变换
         new_h = torch.mm(input, self.W[0:1, :, :].squeeze(0))
         final_h = new_h
@@ -86,29 +90,32 @@ class GPSAttentionLayer(nn.Module):
         # 点a作为m阶邻居聚合到点b上时，对于不同的m，做的线性变换不同
         new_h_as_nei = new_h.unsqueeze(0)
         for ii in range(1, self.thickness):
-            new_h_as_nei = torch.cat((new_h_as_nei, torch.mm(input, self.W[ii:ii + 1, :, :].squeeze(0)).unsqueeze(0)), 0)
+            new_h_as_nei = torch.cat((new_h_as_nei, torch.mm(input, self.W[ii:ii + 1, :, :].squeeze(0)).unsqueeze(0)),
+                                     0)
 
         # 聚合
         for ii in range(self.thickness):
             # 算attention
             receptive_field_1layer = receptive_field[ii:ii + 1, :, :].squeeze(0)
             receptive_field_1d = receptive_field_1layer.view(1, -1).squeeze(0)
-            vector_key = Key.repeat(1, num_recep).view(N*num_recep, -1)
+            vector_key = Key.repeat(1, num_recep).view(N * num_recep, -1)
             receptive_field_1d_view = receptive_field_1d.view(1, -1).squeeze(0)
             vector_query = torch.index_select(Query, 0, receptive_field_1d_view)
             recep_attention = (vector_key * vector_query).sum(1)
             # 将编号为special_id的点的attention手动变为很小的值
-            min_attention_value = torch.min(recep_attention).item()-1000
+            # attention 放缩
+            recep_attention = torch.div(recep_attention, self.sqrtDk)
+            min_attention_value = torch.min(recep_attention).item() - 1000
             recep_attention = recep_attention.view(N, -1)
             min_attention = (torch.ones(N, num_degree).float() * min_attention_value).cuda()
-            recep_attention = torch.where(receptive_field_1layer != (N-1), recep_attention, min_attention)
+            recep_attention = torch.where(receptive_field_1layer != (N - 1), recep_attention, min_attention)
 
             # 根据attention排序
             recep_attention_sorted, recep_attention_indice = torch.sort(recep_attention, dim=1, descending=True)
             # 切片，获得top k的attention值及编号
             recep_attention_sorted = recep_attention_sorted[:, :k]
             recep_attention_sorted = F.softmax(recep_attention_sorted, dim=1)
-            recep_attention_sorted = F.dropout(recep_attention_sorted, self.dropout, training=self.training)
+            # recep_attention_sorted = F.dropout(recep_attention_sorted, self.dropout, training=self.training)
             recep_attention_indice = recep_attention_indice[:, :k]
             tmp_delta = torch.arange(0, N * num_recep, num_recep)
             if self.GPU:
@@ -133,29 +140,30 @@ class GPSAttentionLayer(nn.Module):
             # 若不是最后一层
             final_h = F.relu(final_h)
             final_h = F.dropout(final_h, self.dropout, training=self.training)
-
+        # breakpoint()
         # 拓展感受野
-        receptive_field_1d = receptive_field[self.thickness - 1:self.thickness, :, :].squeeze(0).view(1, -1).squeeze(0) # N*num_recep
+        receptive_field_1d = receptive_field[self.thickness - 1:self.thickness, :, :].squeeze(0).view(1, -1).squeeze(
+            0)  # N*num_recep
         # 得到所有的k+1阶邻居
-        neighbor = torch.index_select(adj, 0, receptive_field_1d).view(1, -1).squeeze(0) # N*numrecep*num_degree
+        neighbor = torch.index_select(adj, 0, receptive_field_1d).view(1, -1).squeeze(0)  # N*numrecep*num_degree
         # 计算所有k+1阶邻居的attention
-        vector_key = Key.repeat(1, num_recep*num_degree).view(N * num_recep * num_degree, -1)
+        vector_key = Key.repeat(1, num_recep * num_degree).view(N * num_recep * num_degree, -1)
         vector_query = torch.index_select(Query, 0, neighbor)
         nei_attention = (vector_key * vector_query).sum(1)
         nei_attention = nei_attention.view(N, -1)  # N*(num_degree*num_recep), recep各点的attention
         neighbor = neighbor.view(N, -1)
         # 手动将special_id的点的attention置为最小
         min_attention_value = torch.min(nei_attention).item() - 1
-        min_attention = (torch.ones(N, num_degree*num_recep).float() * min_attention_value).cuda()
+        min_attention = (torch.ones(N, num_degree * num_recep).float() * min_attention_value).cuda()
         nei_attention = torch.where(neighbor != (N - 1), nei_attention, min_attention)
-        #排序
+        # 排序
         nei_attention_sorted, nei_attention_indice = torch.sort(nei_attention, dim=1, descending=True)
         # 切片，获得前num_recep个
         nei_attention_indice = nei_attention_indice[:, :num_recep]
         tmp_delta = torch.arange(0, N * num_recep * num_degree, num_recep * num_degree)
         if self.GPU:
-            tmp_delta =tmp_delta.cuda()
-        tmp_delta = tmp_delta.unsqueeze(1).repeat(1,num_recep)
+            tmp_delta = tmp_delta.cuda()
+        tmp_delta = tmp_delta.unsqueeze(1).repeat(1, num_recep)
 
         nei_attention_indice = (nei_attention_indice + tmp_delta).view(1, -1).squeeze(0)
         expand_chosed_nodeid = torch.index_select(neighbor.view(1, -1).squeeze(0), 0, nei_attention_indice)
@@ -205,10 +213,10 @@ class GPS(nn.Module):
         super(GPS, self).__init__()
         self.GPU = True
         self.dropout = dropout
-        self.heads = nheads     # head: 感受野不同，最后一层cat起来
-        self.layers = layers    # 层数
+        self.heads = nheads  # head: 感受野不同，最后一层cat起来
+        self.layers = layers  # 层数
         self.attentions = []
-        self.subheads = 1       # subhead: 同一感受野内部，attention的W矩阵不同
+        self.subheads = 1  # subhead: 同一感受野内部，attention的W矩阵不同
         self.nclass = nclass
 
         # 第一层： in: nfeat; out: nhid，即参数中的hidden-size
@@ -223,7 +231,8 @@ class GPS(nn.Module):
         for i in range(layers - 2):
             self.attentions.append([
                 [GPSAttentionLayer(
-                    nhid * self.subheads, nhid, dropout=dropout, alpha=alpha, concat=True, thickness=i + 2, GPU=self.GPU, need_norm=True
+                    nhid * self.subheads, nhid, dropout=dropout, alpha=alpha, concat=True, thickness=i + 2,
+                    GPU=self.GPU, need_norm=True
                 ) for __ in range(self.subheads)]
                 for _ in range(nheads)
             ])
@@ -231,7 +240,8 @@ class GPS(nn.Module):
         # 第n层： in: nhid * 每种感受野内部的subhead数; out: nclass,即类别数
         self.attentions.append([
             [GPSAttentionLayer(
-                nhid * self.subheads, nclass, dropout=dropout, alpha=alpha, concat=True, thickness=layers, GPU=self.GPU, need_norm=False
+                nhid * self.subheads, nclass, dropout=dropout, alpha=alpha, concat=True, thickness=layers, GPU=self.GPU,
+                need_norm=False
             ) for __ in range(self.subheads)]
             for _ in range(nheads)
         ])
@@ -282,7 +292,7 @@ class GPS(nn.Module):
         # 把不同head的输出stack起来，并求和
         x = torch.stack(y)
         x = x.sum(0)
-        x = x[:N0, :]   # 需要去掉special_id的输出
+        x = x[:N0, :]  # 需要去掉special_id的输出
         return F.log_softmax(x, dim=1)
 
     def loss(self, datax, datay, train_mask, adj_processed, max_degree):
