@@ -77,7 +77,7 @@ class NodeClassification():
         # the num of neighbors for one node
         self.max_degree = args.max_degree
         # sample from the adj matrix to adj list
-        self.adj_processed = self.construct_adj(self.data.edges, self.data.node_attr.size()[0])
+        self.adj_processed = self.construct_adj(self.data.node_attr, self.data.edges, self.data.node_attr.size()[0])
         if self.device == torch.device('cuda'):
             self.adj_processed = self.adj_processed.cuda()
 
@@ -97,8 +97,8 @@ class NodeClassification():
                 f"Epoch: {epoch:03d}, Train: {train_acc:.4f}, Val: {val_acc:.4f}, Val Loss:{val_loss:.4f}"
             )
             #debug
-            if val_acc > 0.69:
-                breakpoint()
+            # if val_acc > 0.69:
+            #     breakpoint()
 
             max_valid_acc = max(max_valid_acc, val_acc)
             if val_loss <= min_loss or val_acc >= max_score:
@@ -131,28 +131,31 @@ class NodeClassification():
         self.scheduler.step()
 
     def _test_step(self, split="val"):
+        acc = 0
+        loss_val = 0
         self.model.eval()
-        # the result of of the model
-        logits = self.model.predict(self.data.node_attr, self.adj_processed, self.max_degree)
-        if split == "train":
-            mask = self.data.train_mask
-        elif split == "val":
-            mask = self.data.valid_mask
-        else:
-            mask = self.data.test_mask
+        with torch.no_grad():
+            # the result of of the model
+            logits = self.model.predict(self.data.node_attr, self.adj_processed, self.max_degree)
+            if split == "train":
+                mask = self.data.train_mask
+            elif split == "val":
+                mask = self.data.valid_mask
+            else:
+                mask = self.data.test_mask
 
-        loss = F.nll_loss(logits[mask], self.data.y[mask])
-        # the predict result
-        # breakpoint()
-        pred = logits[mask].max(1)[1]
-        acc = pred.eq(self.data.y[mask]).sum().item() / mask.sum().item()
+            loss = F.nll_loss(logits[mask], self.data.y[mask])
+            # the predict result
+            # breakpoint()
+            pred = logits[mask].max(1)[1]
+            acc = pred.eq(self.data.y[mask]).sum().item() / mask.sum().item()
+            loss_val = loss.item()
+            # devbug
+            # if acc > 0.69 and split=="train":
+            #     print("asd")
+            #     self.draw_pict(self.neighbor, self.data.valid_mask, logits.max(1)[1])
 
-        # devbug
-        if acc > 0.69 and split=="train":
-            print("asd")
-            self.draw_pict(self.neighbor, self.data.valid_mask, logits.max(1)[1])
-
-        return acc, loss.item()
+        return acc, loss_val
 
     def construct_x(self):
         x = self.data.node_attr
@@ -222,12 +225,13 @@ class NodeClassification():
 
 
 
-    def construct_adj(self, adj_list, N):
+    def construct_adj(self, x, adj_list, N):
         '''
         sample from the adj matrix to adj list, every node has max_degree neighbors
         node N is the additional node which do not exist in the graph to satisfy degree requirement
         every node has a self-loop
         '''
+        x=x.cpu().numpy()
         tmp_edges = adj_list.cpu().numpy().T.tolist()
         neighbor = [[] for i in range(N)]
 
@@ -239,14 +243,42 @@ class NodeClassification():
         self.neighbor = copy.deepcopy(neighbor)
 
         adj = np.ones((N, self.max_degree), dtype=np.long)
+
+        L2form = x * x
+        L2form = L2form.sum(1)
+        L2form = np.sqrt(L2form)
+        nei_num = [len(neighbor[i]) for i in range(N)]
         for nodeid in range(N):
             neighbors = neighbor[nodeid]
+            # print(neighbors)
+            # neighbors = np.array(neighbors)
+            # nei_attr = x[neighbors]
+            # nei_cos = nei_attr * x[nodeid]
+            # nei_cos = np.sum(nei_cos, 1)
+            # nei_cos = np.divide(nei_cos, L2form[nodeid]*L2form[neighbors])
+            # nei_cos = 1 - nei_cos
+            # index = [i for i in range(len(neighbors))]
+            #
+            # # cos 排序
+            # # index = sorted(index, key=lambda i: nei_cos[i])
+            #
+            # #邻居数量从大到小排序
+            # # index = sorted(index, key=lambda i: nei_num[neighbors[i]], reverse=True)
+            #
+            #
+            # #邻居数量从小到大排序
+            # index = sorted(index, key=lambda i: nei_num[neighbors[i]], reverse=False)
+            # 
+            # neighbors = neighbors[index].tolist()
+            # print(neighbors)
+            # print("-----------------------")
 
             if len(neighbors) == 0:
                 neighbors = np.ones(self.max_degree, dtype=np.long) * N
             elif len(neighbors) >= self.max_degree:
                 neighbors = np.array(neighbors)
                 # sampling
+                # neighbors = neighbors[0:self.max_degree]
                 neighbors = np.random.choice(neighbors, self.max_degree, replace=False)
             elif len(neighbors) < self.max_degree:
                 # add virtual node instead of upsampling
@@ -254,7 +286,6 @@ class NodeClassification():
                     neighbors.append(N)
                 neighbors = np.array(neighbors)
             adj[nodeid, :] = neighbors
-
         adj = torch.from_numpy(adj).int()
         return adj
 
@@ -271,7 +302,7 @@ if __name__ == "__main__":
     parser.add_argument('--weight-decay', default=0, type=float)
     parser.add_argument('--device-id', default=[0], type=int, nargs='+',
                         help='which GPU to use')
-    parser.add_argument("--hidden-size", type=int, default=256)
+    parser.add_argument("--hidden-size", type=int, default=128)
     parser.add_argument("--dropout", type=float, default=0.5)
     parser.add_argument("--alpha", type=float, default=0.2, help='alpha in leakyrelu')
     parser.add_argument("--nheads", type=int, default=1, help='head number')

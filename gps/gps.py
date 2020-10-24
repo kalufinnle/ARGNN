@@ -104,7 +104,7 @@ class GPSAttentionLayer(nn.Module):
             recep_attention = (vector_key * vector_query).sum(1)
             # 将编号为special_id的点的attention手动变为很小的值
             # attention 放缩
-            recep_attention = torch.div(recep_attention, self.sqrtDk)
+            # recep_attention = torch.div(recep_attention, self.sqrtDk)
             min_attention_value = torch.min(recep_attention).item() - 1000
             recep_attention = recep_attention.view(N, -1)
             min_attention = (torch.ones(N, num_degree).float() * min_attention_value).cuda()
@@ -115,7 +115,7 @@ class GPSAttentionLayer(nn.Module):
             # 切片，获得top k的attention值及编号
             recep_attention_sorted = recep_attention_sorted[:, :k]
             recep_attention_sorted = F.softmax(recep_attention_sorted, dim=1)
-            # recep_attention_sorted = F.dropout(recep_attention_sorted, self.dropout, training=self.training)
+            recep_attention_sorted = F.dropout(recep_attention_sorted, self.dropout, training=self.training)
             recep_attention_indice = recep_attention_indice[:, :k]
             tmp_delta = torch.arange(0, N * num_recep, num_recep)
             if self.GPU:
@@ -126,10 +126,10 @@ class GPSAttentionLayer(nn.Module):
             recep_chosed_nodeid = torch.index_select(receptive_field_1d, 0, recep_attention_indice)
 
             # 获得top k的向量表示
-            recep_chosed_new_h = torch.index_select(new_h_as_nei[ii:ii + 1, :, :].squeeze(0), 0, recep_chosed_nodeid)
-            recep_chosed_new_h = recep_chosed_new_h.view(N, k, -1)  # N*k*out_feature
-            recep_attention_sorted = recep_attention_sorted.unsqueeze(2).repeat(1, 1,
-                                                                                self.out_features)  # N*k*out_feature
+            recep_chosed_new_h = torch.index_select(new_h_as_nei[ii:ii + 1, :, :].squeeze(0), 0, recep_chosed_nodeid).view(N, k, -1) # N*k*out_feature
+            # recep_chosed_new_h = recep_chosed_new_h.view(N, k, -1)  # N*k*out_feature
+            # print(recep_chosed_new_h.shape)
+            recep_attention_sorted = recep_attention_sorted.unsqueeze(2)#.repeat(1, 1, self.out_features)  # N*k*out_feature
             # 聚合（即使special id被选进去了，由于其向量表示恒为全0，不会影响结果）
             final_h = torch.sum((recep_attention_sorted * recep_chosed_new_h), 1) + final_h
 
@@ -138,18 +138,18 @@ class GPSAttentionLayer(nn.Module):
             final_h = self.bn(final_h)
         if self.thickness != 2:
             # 若不是最后一层
-            final_h = F.relu(final_h)
+            final_h = F.relu(final_h, inplace=True)#inplace
             final_h = F.dropout(final_h, self.dropout, training=self.training)
         # breakpoint()
         # 拓展感受野
-        receptive_field_1d = receptive_field[self.thickness - 1:self.thickness, :, :].squeeze(0).view(1, -1).squeeze(
-            0)  # N*num_recep
+        receptive_field_1d = receptive_field[self.thickness - 1:self.thickness, :, :].squeeze(0).view(1, -1).squeeze(0)  # N*num_recep
         # 得到所有的k+1阶邻居
-        neighbor = torch.index_select(adj, 0, receptive_field_1d).view(1, -1).squeeze(0)  # N*numrecep*num_degree
+        neighbor = torch.index_select(adj, 0, receptive_field_1d).view(N, -1)#.view(1, -1).squeeze(0)  # N*numrecep*num_degree
         # 计算所有k+1阶邻居的attention
-        vector_key = Key.repeat(1, num_recep * num_degree).view(N * num_recep * num_degree, -1)
-        vector_query = torch.index_select(Query, 0, neighbor)
-        nei_attention = (vector_key * vector_query).sum(1)
+        vector_key = Key.view(N, 1, -1)#.repeat(1, num_recep * num_degree).view(N * num_recep * num_degree, -1)
+        # vector_key = Key.view(N, -1)
+        vector_query = Query[neighbor] #torch.index_select(Query, 0, neighbor)
+        nei_attention = (vector_key * vector_query).view(N*num_degree*num_recep, -1).sum(1)
         nei_attention = nei_attention.view(N, -1)  # N*(num_degree*num_recep), recep各点的attention
         neighbor = neighbor.view(N, -1)
         # 手动将special_id的点的attention置为最小
