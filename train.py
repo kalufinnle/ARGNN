@@ -70,7 +70,10 @@ class NodeClassification():
         self.patience = args.patience
         self.max_epoch = args.max_epoch
 
-        self.optimizer = torch.optim.Adam(
+        # self.optimizer = torch.optim.Adam(
+        #     self.model.parameters(), lr=args.lr, weight_decay=args.weight_decay
+        # )
+        self.optimizer = torch.optim.RMSprop(
             self.model.parameters(), lr=args.lr, weight_decay=args.weight_decay
         )
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.98)
@@ -298,7 +301,7 @@ if __name__ == "__main__":
     parser.add_argument('--cpu', action='store_true', help='use CPU instead of CUDA')
     parser.add_argument('--max-epoch', default=1000, type=int)
     parser.add_argument("--patience", type=int, default=100)
-    parser.add_argument('--lr', default=0.01, type=float)
+    parser.add_argument('--lr', default=0.002, type=float)
     parser.add_argument('--weight-decay', default=0, type=float)
     parser.add_argument('--device-id', default=[0], type=int, nargs='+',
                         help='which GPU to use')
@@ -307,7 +310,9 @@ if __name__ == "__main__":
     parser.add_argument("--alpha", type=float, default=0.2, help='alpha in leakyrelu')
     parser.add_argument("--nheads", type=int, default=1, help='head number')
     parser.add_argument("--attention_hid", type=int, default=1, help='attention head number')
+    parser.add_argument("--attention_dropout", type=float, default=0.00, help="attention dropout")
     parser.add_argument("--max-degree", type=int, default=10)
+    parser.add_argument("--note", type=str, default="no note")
 
     args = parser.parse_args()
     if torch.cuda.is_available() and not args.cpu:
