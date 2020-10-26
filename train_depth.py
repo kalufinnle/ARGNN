@@ -4,7 +4,7 @@ import copy
 from ogb.nodeproppred import PygNodePropPredDataset
 from tqdm import tqdm
 import argparse
-from gps.gps import GPS
+from gps_depth.gps_depth import GPSDepth
 import torch.nn.functional as F
 
 class data():
@@ -61,7 +61,7 @@ class NodeClassification():
         args.num_features = dataset.num_features
         args.num_classes = dataset.num_classes
         
-        model = GPS.build_model_from_args(args)
+        model = GPSDepth.build_model_from_args(args)
         self.model = model.to(self.device)
         self.patience = args.patience
         self.max_epoch = args.max_epoch
@@ -70,12 +70,10 @@ class NodeClassification():
             self.model.parameters(), lr=args.lr, weight_decay=args.weight_decay
         )
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.98)
-        #the num of neighbors for one node
-        self.max_degree = args.max_degree
         #sample from the adj matrix to adj list 
-        self.adj_processed = self.construct_adj(self.data.edges, self.data.node_attr.size()[0])
+        self.adj_sparse = self.construct_adj(self.data.edges, self.data.node_attr.size()[0])
         if self.device == torch.device('cuda'):
-            self.adj_processed = self.adj_processed.cuda()
+            self.adj_sparse = self.adj_sparse.cuda()
         self.max_valid_acc = 0
 
     def train(self):
@@ -117,7 +115,7 @@ class NodeClassification():
     def _train_step(self):
         self.model.train()
         self.optimizer.zero_grad()
-        loss = self.model.loss(self.data.node_attr, self.data.y, self.data.train_mask, self.adj_processed, self.max_degree)
+        loss = self.model.loss(self.data.node_attr, self.data.y, self.data.train_mask, self.adj_sparse)
         loss.backward()
         self.optimizer.step()
         self.scheduler.step()
@@ -125,7 +123,7 @@ class NodeClassification():
     def _test_step(self, split="val"):
         self.model.eval()
         #the result of of the model
-        logits = self.model.predict(self.data.node_attr, self.adj_processed, self.max_degree)
+        logits = self.model.predict(self.data.node_attr, self.adj_sparse)
         if split == "train":
             mask = self.data.train_mask
         elif split == "val":
@@ -148,6 +146,7 @@ class NodeClassification():
 
 
     def construct_adj(self, adj_list, N):
+        print("adj in")
         # 把自环去掉！！
         '''
         sample from the adj matrix to adj list, every node has max_degree neighbors 
@@ -155,31 +154,18 @@ class NodeClassification():
         every node has a self-loop
         '''
         tmp_edges = adj_list.cpu().numpy().T.tolist()
-        neighbor = [[] for i in range(N)]
+        bi_edge = []
+        bi_edge_cnt = 0
 
         for edge in tmp_edges:
-            neighbor[edge[0]].append(edge[1])
-            neighbor[edge[1]].append(edge[0])
-       
-        adj = np.ones((N, self.max_degree), dtype=np.long)
-        for nodeid in range(N):
-            neighbors = neighbor[nodeid]
+            bi_edge.append([edge[0], edge[1]])
+            bi_edge.append([edge[1], edge[0]])
+            bi_edge_cnt += 2
 
-            if len(neighbors) == 0:
-                neighbors = np.ones(self.max_degree, dtype=np.long) * N
-            elif len(neighbors) >= self.max_degree:
-                neighbors = np.array(neighbors)
-                #sampling
-                neighbors = np.random.choice(neighbors, self.max_degree, replace=False)
-            elif len(neighbors) < self.max_degree:
-                #add virtual node instead of upsampling
-                for i in range(len(neighbors), self.max_degree):
-                    neighbors.append(N)
-                neighbors = np.array(neighbors)
-            adj[nodeid, :] = neighbors
-
-        adj = torch.from_numpy(adj).int()
-        return adj
+        bi_edge = torch.LongTensor(bi_edge).t()
+        bi_v = torch.FloatTensor(torch.ones(bi_edge_cnt))
+        print("adj out")
+        return torch.sparse.FloatTensor(bi_edge, bi_v, torch.Size([N, N]))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="gps args")  # fmt: off
