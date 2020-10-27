@@ -15,9 +15,18 @@ class data():
         self.node_attr = node_attr
         self.y = y.squeeze(1)
         self.edges = edges
+        self.N = node_attr.size()[0]
+        loop = [i for i in range(self.N)]
+        loop = torch.tensor([loop, loop]).long()
+        self.edges = torch.cat((self.edges, loop), dim=1)
+        self.degree = torch.zeros(self.N)
+        for i in range(self.edges.size()[1]):
+            self.degree[self.edges[0][i]] += 1
+            self.degree[self.edges[1][i]] += 1
+
+
         self.num_features = node_attr.size()[1]
         self.num_classes = torch.max(self.y).item() + 1  # count from 0
-        self.N = node_attr.size()[0]
         self.train_mask = np.zeros(self.N, dtype=bool)
         self.valid_mask = np.zeros(self.N, dtype=bool)
         self.test_mask = np.zeros(self.N, dtype=bool)
@@ -28,6 +37,9 @@ class data():
         self.valid_mask = torch.from_numpy(self.valid_mask)
         self.test_mask = torch.from_numpy(self.test_mask)
 
+        N = self.node_attr.size()[0]
+        # self.A = torch.sparse.FloatTensor(self.edges, torch.ones(self.edges.size()[1]), (N,N))
+
     def apply(self, param):
         # for x in self.
         self.node_attr = param(self.node_attr)
@@ -37,6 +49,8 @@ class data():
         self.train_mask = param(self.train_mask)
         self.valid_mask = param(self.valid_mask)
         self.test_mask = param(self.test_mask)
+        self.degree = param(self.degree)
+        # self.A = param(self.A)
         pass
 
 
@@ -70,19 +84,17 @@ class NodeClassification():
         self.patience = args.patience
         self.max_epoch = args.max_epoch
 
-        # self.optimizer = torch.optim.Adam(
-        #     self.model.parameters(), lr=args.lr, weight_decay=args.weight_decay
-        # )
-        self.optimizer = torch.optim.RMSprop(
+        self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=args.lr, weight_decay=args.weight_decay
         )
+        # self.optimizer = torch.optim.RMSprop(
+        #     self.model.parameters(), lr=args.lr, weight_decay=args.weight_decay
+        # )
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.98)
         # the num of neighbors for one node
         self.max_degree = args.max_degree
         # sample from the adj matrix to adj list
-        self.adj_processed = self.construct_adj(self.data.node_attr, self.data.edges, self.data.node_attr.size()[0])
-        if self.device == torch.device('cuda'):
-            self.adj_processed = self.adj_processed.cuda()
+        # self.adj_processed = self.construct_adj(self.data.node_attr, self.data.edges, self.data.node_attr.size()[0])
 
     def train(self):
         epoch_iter = tqdm(range(self.max_epoch))
@@ -99,7 +111,7 @@ class NodeClassification():
             epoch_iter.set_description(
                 f"Epoch: {epoch:03d}, Train: {train_acc:.4f}, Val: {val_acc:.4f}, Val Loss:{val_loss:.4f}"
             )
-            #debug
+            # debug
             # if val_acc > 0.69:
             #     breakpoint()
 
@@ -127,8 +139,7 @@ class NodeClassification():
         self.model.train()
         self.optimizer.zero_grad()
 
-        loss = self.model.loss(self.data.node_attr, self.data.y, self.data.train_mask, self.adj_processed,
-                               self.max_degree)
+        loss = self.model.loss(self.data.node_attr, self.data.y, self.data.train_mask, self.data.edges, self.data.degree)
         loss.backward()
         self.optimizer.step()
         self.scheduler.step()
@@ -139,7 +150,7 @@ class NodeClassification():
         self.model.eval()
         with torch.no_grad():
             # the result of of the model
-            logits = self.model.predict(self.data.node_attr, self.adj_processed, self.max_degree)
+            logits = self.model.predict(self.data.node_attr, self.data.edges, self.data.degree)
             if split == "train":
                 mask = self.data.train_mask
             elif split == "val":
@@ -301,7 +312,7 @@ if __name__ == "__main__":
     parser.add_argument('--cpu', action='store_true', help='use CPU instead of CUDA')
     parser.add_argument('--max-epoch', default=1000, type=int)
     parser.add_argument("--patience", type=int, default=100)
-    parser.add_argument('--lr', default=0.002, type=float)
+    parser.add_argument('--lr', default=0.02, type=float)
     parser.add_argument('--weight-decay', default=0, type=float)
     parser.add_argument('--device-id', default=[0], type=int, nargs='+',
                         help='which GPU to use')
