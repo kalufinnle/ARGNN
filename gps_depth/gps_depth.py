@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch_sparse import SparseTensor, matmul, fill_diag, sum, mul
+
 import time
 
 
@@ -57,6 +59,11 @@ class GPSDepthAttentionLayer(nn.Module):
         self.B = nn.Parameter(torch.zeros(size=(1, out_features)))
         nn.init.xavier_normal_(self.B.data, gain=1.414)
 
+        self.W_2mini = nn.Parameter(torch.zeros(size=(out_features, self.attention_hid)))
+        nn.init.xavier_normal_(self.W_2mini.data, gain=1.414)
+        self.B_2mini = nn.Parameter(torch.zeros(size=(1, self.attention_hid)))
+        nn.init.xavier_normal_(self.B_2mini.data, gain=1.414)
+
         self.dropout = dropout
         # tmp
         self.attention_dropout = 0.05
@@ -69,22 +76,22 @@ class GPSDepthAttentionLayer(nn.Module):
             self.bn = torch.nn.BatchNorm1d(self.out_features)
             self.bn.reset_parameters()
 
-        self.linear_factor1 = nn.Linear(self.out_features*3, self.out_features)
+        self.linear_factor1 = nn.Linear(self.attention_hid*3, self.attention_hid)
         nn.init.xavier_normal_(self.linear_factor1.weight, gain=1.414)
         nn.init.constant_(self.linear_factor1.bias, 0)
 
-        self.linear_factor2 = nn.Linear(self.out_features, 1)
+        self.linear_factor2 = nn.Linear(self.attention_hid, 1)
         nn.init.xavier_normal_(self.linear_factor2.weight, gain=1.414)
         nn.init.constant_(self.linear_factor2.bias, 0)
+        self.special_spmm = SpecialSpmm()
 
 
-    def forward(self, input, adj, aggr_factor):
+    def forward(self, input, adj, aggr_factor, edges):
         # --------------------------------------------------------------------------------
         # adj: sparse tensor
         # aggr_factor：(N, ) tensor. float
         # --------------------------------------------------------------------------------
         N = input.size()[0]         # 此时N为实际的N+1(多了一个special_id)
-        breakpoint()
         # 对h做线性变换
         new_h = torch.mm(input, self.W) + self.B
 
@@ -94,16 +101,15 @@ class GPSDepthAttentionLayer(nn.Module):
         F.dropout(simple_attention_la, self.attention_dropout, training=self.training)
         F.dropout(simple_attention_ra, self.attention_dropout, training=self.training)
 
-        a_src = torch.index_select(simple_attention_la, 0, adj._indices()[0])
-        a_dst = torch.index_select(simple_attention_ra, 0, adj._indices()[1])
+        a_src = torch.index_select(simple_attention_la, 0, edges[0])
+        a_dst = torch.index_select(simple_attention_ra, 0, edges[1])
         a_edge = (a_src + a_dst).div(self.out_features)
         a_edge = torch.exp(- self.leakyrelu(a_edge))
-        a_sparse = torch.sparse.FloatTensor(adj._indices(), a_edge, torch.Size([N, N])).cuda()
+        # test!
+        a_sparse = SparseTensor.from_edge_index(edge_index=edges, edge_attr=a_edge, sparse_sizes=torch.Size([N, N])).cuda()
+        a_sparse_sum_rowwise = matmul(a_sparse, torch.ones(N, 1).cuda(), reduce='sum')
 
-        sum_helper = torch.ones(N, 1).cuda()
-        a_sparse_sum_rowwise = torch.sparse.mm(a_sparse, sum_helper)
-
-        final_h = aggr_factor * (torch.div(torch.sparse.mm(a_sparse, new_h), a_sparse_sum_rowwise)) + (1-aggr_factor) * new_h
+        final_h = aggr_factor * (torch.div(matmul(a_sparse, new_h), a_sparse_sum_rowwise)) + (1-aggr_factor) * new_h
 
         if self.need_norm:
             # batch normalization
@@ -114,27 +120,24 @@ class GPSDepthAttentionLayer(nn.Module):
             final_h = F.relu(final_h, inplace=True)
             final_h = F.dropout(final_h, self.dropout, training=self.training)
 
+        new_h_mini = torch.mm(final_h, self.W_2mini) + self.B_2mini
+
         # get aggre_factor for next layer
-        h_src = torch.index_select(new_h, 0, adj._indices()[0])
-        h_dst = torch.index_select(new_h, 0, adj._indices()[1])
+        h_src = torch.index_select(new_h_mini, 0, edges[0])
+        h_dst = torch.index_select(new_h_mini, 0, edges[1])
         h_diff = torch.abs(h_dst - h_src)
         factor_cal = torch.cat((h_src, h_dst, h_diff), 1)
         factor_cal = self.linear_factor1(factor_cal)
-        factor_cal = factor_cal.div(self.out_features)
+        # factor_cal = factor_cal.div(self.out_features)
         factor_cal = F.relu(factor_cal)
         factor_cal = self.linear_factor2(factor_cal)
-        factor_cal = factor_cal.div(self.out_features)
+        # factor_cal = factor_cal.div(self.out_features)
         factor_cal = self.leakyrelu(factor_cal)
 
-        factor_cal = F.sigmoid(factor_cal)
-        factor_cal_sparse = torch.sparse.FloatTensor(adj._indices(), factor_cal, torch.Size([N, N]))
-
-        factor_cal_sparse_sum_rowwise = torch.sparse.mm(factor_cal_sparse, sum_helper)
-        adj_sparse_sum_rowwise = torch.sparse.mm(adj, sum_helper)
-        factor_res_1hop = torch.div(factor_cal_sparse_sum_rowwise, adj_sparse_sum_rowwise) #(N, 1)
-
-        factor_cal_sparse2_sum_rowwise = torch.sparse.mm(factor_cal_sparse, factor_res_1hop)
-        factor_res_2hop = torch.div(factor_cal_sparse2_sum_rowwise, adj_sparse_sum_rowwise) #(N, 1)
+        factor_cal = F.sigmoid(factor_cal).squeeze()
+        factor_cal_sparse = SparseTensor.from_edge_index(edge_index=edges, edge_attr=factor_cal, sparse_sizes=torch.Size([N, N])).cuda()
+        factor_res_1hop = matmul(factor_cal_sparse, torch.ones(N, 1).cuda(), reduce='mean')
+        factor_res_2hop = matmul(factor_cal_sparse, factor_res_1hop, reduce='mean')
 
         return final_h, factor_res_2hop
 
@@ -184,7 +187,7 @@ class GPSDepth(nn.Module):
         self.attentions = []
         self.subheads = 4       # subhead: 同一感受野内部，attention的W矩阵不同
         self.nclass = nclass
-        self.attention_size = 32
+        self.attention_size = 16
 
         # 第一层： in: nfeat; out: nhid，即参数中的hidden-size
         self.attentions.append([
@@ -216,7 +219,7 @@ class GPSDepth(nn.Module):
                 for t, at in enumerate(att):
                     self.add_module("attention_{}_{}_{}".format(i, j, t), at)
 
-    def forward(self, x, adj):
+    def forward(self, x, adj, edges):
         # adj: sparse tensor
         y = [x.clone() for _ in range(self.heads)]
         z = [x.clone() for _ in range(self.heads)]
@@ -230,12 +233,13 @@ class GPSDepth(nn.Module):
                 for number_subattention in range(self.subheads):
                     ytmp, aggr_factors[number_attention] = \
                         self.attentions[layer][number_attention][number_subattention](y[number_attention],
-                                                                                      adj, aggr_factors[number_attention])
+                                                                                      adj, aggr_factors[number_attention], edges)
                     if number_subattention == 0:
                         z[number_attention] = ytmp
                     else:
                         z[number_attention] = torch.cat((z[number_attention], ytmp), 1)
                 y[number_attention] = z[number_attention]
+            # print("layer", layer, aggr_factors[0])
 
         # print("attention", receptive_field[0][:, 119, :])
         # 把不同head的输出stack起来，并求和
@@ -243,12 +247,12 @@ class GPSDepth(nn.Module):
         x = x.sum(0)
         return F.log_softmax(x, dim=1)
 
-    def loss(self, datax, datay, train_mask, adj_sparse):
+    def loss(self, datax, datay, train_mask, adj_sparse, edges):
 
         return F.nll_loss(
-            self.forward(datax, adj_sparse)[train_mask],
+            self.forward(datax, adj_sparse, edges)[train_mask],
             datay[train_mask],
         )
 
-    def predict(self, datax, adj_sparse):
-        return self.forward(datax, adj_sparse)
+    def predict(self, datax, adj_sparse, edges):
+        return self.forward(datax, adj_sparse, edges)

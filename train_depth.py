@@ -6,6 +6,8 @@ from tqdm import tqdm
 import argparse
 from gps_depth.gps_depth import GPSDepth
 import torch.nn.functional as F
+from torch_sparse import SparseTensor
+
 
 class data():
     def __init__(self, node_attr, y, edges, train_idx, valid_idx, test_idx):
@@ -53,6 +55,8 @@ class NodeClassification():
     def __init__(self, args, dataset=None, model=None):
 
         self.device = torch.device('cpu' if args.cpu else 'cuda')
+        print("4444")
+
 
         dataset = build_dataset_ogb(args.dataset)
         self.data = dataset
@@ -60,6 +64,8 @@ class NodeClassification():
 
         args.num_features = dataset.num_features
         args.num_classes = dataset.num_classes
+
+        print("build")
         
         model = GPSDepth.build_model_from_args(args)
         self.model = model.to(self.device)
@@ -70,10 +76,12 @@ class NodeClassification():
             self.model.parameters(), lr=args.lr, weight_decay=args.weight_decay
         )
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.98)
+        print("2222")
         #sample from the adj matrix to adj list 
-        self.adj_sparse = self.construct_adj(self.data.edges, self.data.node_attr.size()[0])
+        self.adj_sparse, self.edges = self.construct_adj(self.data.edges, self.data.node_attr.size()[0])
         if self.device == torch.device('cuda'):
             self.adj_sparse = self.adj_sparse.cuda()
+            self.edges = self.edges.cuda()
         self.max_valid_acc = 0
 
     def train(self):
@@ -115,7 +123,7 @@ class NodeClassification():
     def _train_step(self):
         self.model.train()
         self.optimizer.zero_grad()
-        loss = self.model.loss(self.data.node_attr, self.data.y, self.data.train_mask, self.adj_sparse)
+        loss = self.model.loss(self.data.node_attr, self.data.y, self.data.train_mask, self.adj_sparse, self.edges)
         loss.backward()
         self.optimizer.step()
         self.scheduler.step()
@@ -123,7 +131,7 @@ class NodeClassification():
     def _test_step(self, split="val"):
         self.model.eval()
         #the result of of the model
-        logits = self.model.predict(self.data.node_attr, self.adj_sparse)
+        logits = self.model.predict(self.data.node_attr, self.adj_sparse, self.edges)
         if split == "train":
             mask = self.data.train_mask
         elif split == "val":
@@ -163,9 +171,8 @@ class NodeClassification():
             bi_edge_cnt += 2
 
         bi_edge = torch.LongTensor(bi_edge).t()
-        bi_v = torch.FloatTensor(torch.ones(bi_edge_cnt))
-        print("adj out")
-        return torch.sparse.FloatTensor(bi_edge, bi_v, torch.Size([N, N]))
+
+        return SparseTensor.from_edge_index(edge_index=bi_edge, sparse_sizes=torch.Size([N, N])), bi_edge
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="gps args")  # fmt: off
@@ -179,7 +186,7 @@ if __name__ == "__main__":
     parser.add_argument('--weight-decay', default=0, type=float)
     parser.add_argument('--device-id', default=[0], type=int, nargs='+',
                         help='which GPU to use')
-    parser.add_argument("--hidden-size", type=int, default=256)
+    parser.add_argument("--hidden-size", type=int, default=64)
     parser.add_argument("--dropout", type=float, default=0.5)
     parser.add_argument("--alpha", type=float, default=0.2, help='alpha in leakyrelu')
     parser.add_argument("--nheads", type=int, default=1, help='head number')
