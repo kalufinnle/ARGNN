@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_sparse import SparseTensor, matmul, fill_diag, sum, mul
+import math
 
 import time
 
@@ -103,7 +104,7 @@ class GPSDepthAttentionLayer(nn.Module):
 
         a_src = torch.index_select(simple_attention_la, 0, edges[0])
         a_dst = torch.index_select(simple_attention_ra, 0, edges[1])
-        a_edge = (a_src + a_dst).div(self.out_features)
+        a_edge = (a_src + a_dst).div(math.sqrt(self.out_features))
         a_edge = torch.exp(- self.leakyrelu(a_edge))
         # test!
         a_sparse = SparseTensor.from_edge_index(edge_index=edges, edge_attr=a_edge, sparse_sizes=torch.Size([N, N])).cuda()
@@ -129,12 +130,11 @@ class GPSDepthAttentionLayer(nn.Module):
         factor_cal = torch.cat((h_src, h_dst, h_diff), 1)
         factor_cal = self.linear_factor1(factor_cal)
         # factor_cal = factor_cal.div(self.out_features)
-        factor_cal = F.relu(factor_cal)
+        factor_cal = F.tanh(factor_cal)
         factor_cal = self.linear_factor2(factor_cal)
         # factor_cal = factor_cal.div(self.out_features)
-        factor_cal = self.leakyrelu(factor_cal)
-
         factor_cal = F.sigmoid(factor_cal).squeeze()
+
         factor_cal_sparse = SparseTensor.from_edge_index(edge_index=edges, edge_attr=factor_cal, sparse_sizes=torch.Size([N, N])).cuda()
         factor_res_1hop = matmul(factor_cal_sparse, torch.ones(N, 1).cuda(), reduce='mean')
         factor_res_2hop = matmul(factor_cal_sparse, factor_res_1hop, reduce='mean')
@@ -175,9 +175,10 @@ class GPSDepth(nn.Module):
             args.dropout,
             args.alpha,
             args.nheads,
+            args.layers
         )
 
-    def __init__(self, nfeat, nhid, nclass, dropout, alpha, nheads, layers=2,):
+    def __init__(self, nfeat, nhid, nclass, dropout, alpha, nheads, layers=3,):
         """Sparse version of GAT."""
         super(GPSDepth, self).__init__()
         self.GPU = True
@@ -185,7 +186,7 @@ class GPSDepth(nn.Module):
         self.heads = nheads     # head: 感受野不同，最后一层cat起来
         self.layers = layers    # 层数
         self.attentions = []
-        self.subheads = 4       # subhead: 同一感受野内部，attention的W矩阵不同
+        self.subheads = 1       # subhead: 同一感受野内部，attention的W矩阵不同
         self.nclass = nclass
         self.attention_size = 16
 
@@ -201,7 +202,7 @@ class GPSDepth(nn.Module):
         for i in range(layers - 2):
             self.attentions.append([
                 [GPSDepthAttentionLayer(
-                    nhid * self.subheads, nhid, attention_size=self.attention_size, dropout=dropout, alpha=alpha, concat=True, thickness=i + 2, GPU=self.GPU, need_norm=True
+                    nhid, nhid, attention_size=self.attention_size, dropout=dropout, alpha=alpha, concat=True, thickness=i + 2, GPU=self.GPU, need_norm=True
                 ) for __ in range(self.subheads)]
                 for _ in range(nheads)
             ])
@@ -209,7 +210,7 @@ class GPSDepth(nn.Module):
         # 第n层： in: nhid * 每种感受野内部的subhead数; out: nclass,即类别数
         self.attentions.append([
             [GPSDepthAttentionLayer(
-                nhid * self.subheads, nclass, attention_size=self.attention_size, dropout=dropout, alpha=alpha, concat=True, thickness=layers, GPU=self.GPU, need_norm=False
+                nhid, nclass, attention_size=self.attention_size, dropout=dropout, alpha=alpha, concat=True, thickness=layers, GPU=self.GPU, need_norm=False
             ) for __ in range(self.subheads)]
             for _ in range(nheads)
         ])
@@ -230,16 +231,20 @@ class GPSDepth(nn.Module):
             # head: 感受野不同，最后一层cat起来
             for number_attention in range(self.heads):
                 # subhead: 共享感受野，但attention的W矩阵不同
+                if layer == 3:
+                    print("layer", layer, aggr_factors[0].squeeze().sum() / N)
                 for number_subattention in range(self.subheads):
-                    ytmp, aggr_factors[number_attention] = \
+                    ytmp, aggr_factors_tmp = \
                         self.attentions[layer][number_attention][number_subattention](y[number_attention],
                                                                                       adj, aggr_factors[number_attention], edges)
+                    aggr_factors[number_attention] = aggr_factors[number_attention] * aggr_factors_tmp
                     if number_subattention == 0:
                         z[number_attention] = ytmp
                     else:
-                        z[number_attention] = torch.cat((z[number_attention], ytmp), 1)
+                        z[number_attention] = z[number_attention] + ytmp
+                        # z[number_attention] = torch.cat((z[number_attention], ytmp), 1)
                 y[number_attention] = z[number_attention]
-            # print("layer", layer, aggr_factors[0])
+
 
         # print("attention", receptive_field[0][:, 119, :])
         # 把不同head的输出stack起来，并求和
