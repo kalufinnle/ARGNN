@@ -27,6 +27,17 @@ class data():
         self.train_mask = torch.from_numpy(self.train_mask)
         self.valid_mask = torch.from_numpy(self.valid_mask)
         self.test_mask = torch.from_numpy(self.test_mask)
+        # self.degree = torch.ones(self.N)
+        # for i in range(self.edges.size()[1]):
+        #     self.degree[self.edges[0][i]] += 1
+        #     self.degree[self.edges[1][i]] += 1
+        # self.degree = torch.pow(self.degree, -0.5)
+        degree = [1 for _ in range(self.N)]
+        for i in range(self.edges.size()[1]):
+            degree[self.edges[0][i]] += 1
+            degree[self.edges[1][i]] += 1
+        self.degree = torch.tensor(degree).float()
+        self.degree = torch.pow(self.degree, -0.5)
 
     def apply(self, param):
         # for x in self.
@@ -37,6 +48,8 @@ class data():
         self.train_mask = param(self.train_mask)
         self.valid_mask = param(self.valid_mask)
         self.test_mask = param(self.test_mask)
+        self.degree = param(self.degree)
+
         pass
 
 def build_dataset_ogb(dataset):
@@ -125,7 +138,7 @@ class NodeClassification():
     def _train_step(self):
         self.model.train()
         self.optimizer.zero_grad()
-        loss = self.model.loss(self.data.node_attr, self.data.y, self.data.train_mask, self.adj_sparse, self.edges)
+        loss = self.model.loss(self.data.node_attr, self.data.y, self.data.train_mask, self.adj_sparse, self.edges, self.data.degree)
         loss.backward()
         self.optimizer.step()
         self.scheduler.step()
@@ -133,7 +146,7 @@ class NodeClassification():
     def _test_step(self, split="val"):
         self.model.eval()
         #the result of of the model
-        logits = self.model.predict(self.data.node_attr, self.adj_sparse, self.edges)
+        logits = self.model.predict(self.data.node_attr, self.adj_sparse, self.edges, self.data.degree)
         if split == "train":
             mask = self.data.train_mask
         elif split == "val":
@@ -182,7 +195,7 @@ class NodeClassification():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="gps args")  # fmt: off
 
-    parser.add_argument("--layers", type=int, default=3, help='the layers number')
+    parser.add_argument("--layers", type=int, default=5, help='the layers number')
     parser.add_argument("--dataset", type=str, default="ogbn_arxiv", help='chose a dataset')
     parser.add_argument('--cpu', action='store_true', help='use CPU instead of CUDA')
     parser.add_argument('--max-epoch', default=2000, type=int)
