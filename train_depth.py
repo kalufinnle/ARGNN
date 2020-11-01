@@ -64,6 +64,8 @@ class NodeClassification():
 
         args.num_features = dataset.num_features
         args.num_classes = dataset.num_classes
+        self.layers = args.layers
+
 
         print("build")
         
@@ -170,6 +172,9 @@ class NodeClassification():
             bi_edge.append([edge[1], edge[0]])
             bi_edge_cnt += 2
 
+        for n in range(N):
+            bi_edge.append([n, n])
+
         bi_edge = torch.LongTensor(bi_edge).t()
 
         return SparseTensor.from_edge_index(edge_index=bi_edge, sparse_sizes=torch.Size([N, N])), bi_edge
@@ -177,16 +182,16 @@ class NodeClassification():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="gps args")  # fmt: off
 
-    parser.add_argument("--layers", type=int, default=2, help='the layers number')
+    parser.add_argument("--layers", type=int, default=3, help='the layers number')
     parser.add_argument("--dataset", type=str, default="ogbn_arxiv", help='chose a dataset')
     parser.add_argument('--cpu', action='store_true', help='use CPU instead of CUDA')
-    parser.add_argument('--max-epoch', default=1000, type=int)
+    parser.add_argument('--max-epoch', default=2000, type=int)
     parser.add_argument("--patience", type=int, default=100)
-    parser.add_argument('--lr', default=0.001, type=float)
+    parser.add_argument('--lr', default=0.01, type=float)
     parser.add_argument('--weight-decay', default=0, type=float)
     parser.add_argument('--device-id', default=[0], type=int, nargs='+',
                         help='which GPU to use')
-    parser.add_argument("--hidden-size", type=int, default=64)
+    parser.add_argument("--hidden-size", type=int, default=128)
     parser.add_argument("--dropout", type=float, default=0.5)
     parser.add_argument("--alpha", type=float, default=0.2, help='alpha in leakyrelu')
     parser.add_argument("--nheads", type=int, default=1, help='head number')
