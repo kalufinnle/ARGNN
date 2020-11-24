@@ -41,7 +41,7 @@ class GPSDepthAttentionLayer(nn.Module):
     Sparse version GAT layer, similar to https://arxiv.org/abs/1710.10903
     """
 
-    def __init__(self, in_features, out_features, dropout, alpha, concat=True,thickness=1, max_dis=3, k=100, attention_size = 16, GPU = False, need_norm = True):
+    def __init__(self, in_features, out_features, dropout, alpha, N, concat=True,thickness=1, max_dis=3, k=100, attention_size = 16, GPU = False, need_norm = True):
         super(GPSDepthAttentionLayer, self).__init__()
         self.GPU = GPU  # 是否使用GPU
         self.in_features = in_features
@@ -96,42 +96,14 @@ class GPSDepthAttentionLayer(nn.Module):
         # adj: sparse tensor
         # aggr_factor：(N, ) tensor. float
         # --------------------------------------------------------------------------------
-        N = input.size()[0]         # 此时N为实际的N+1(多了一个special_id)
-        # 对h做线性变换
-        # new_h = torch.mm(input, self.W) + self.B
-        #
-        # # 先算出simple_attention的la和ra，为后续做准备
-        # simple_attention_la = torch.mm(new_h, self.la_simple).view(-1) + self.Bla_simple
-        # simple_attention_ra = torch.mm(new_h, self.ra_simple).view(-1) + self.Bra_simple
-        # F.dropout(simple_attention_la, self.attention_dropout, training=self.training)
-        # F.dropout(simple_attention_ra, self.attention_dropout, training=self.training)
-        #
-        # a_src = torch.index_select(simple_attention_la, 0, edges[0])
-        # a_dst = torch.index_select(simple_attention_ra, 0, edges[1])
-        # a_edge = (a_src + a_dst).div(math.sqrt(self.out_features))
-        # a_edge = torch.exp(- self.leakyrelu(a_edge))
-        # # test!
-        # a_sparse = SparseTensor.from_edge_index(edge_index=edges, edge_attr=a_edge, sparse_sizes=torch.Size([N, N])).cuda()
-        # a_sparse_sum_rowwise = matmul(a_sparse, torch.ones(N, 1).cuda(), reduce='sum')
-        # degree = torch.unsqueeze(degree, dim=1)
-        # print(degree.shape)
-
-
+        N = input.size()[0]
+        # input = F.dropout(input, 0.7, training=self.training)
 
         final_h = aggr_factor * matmul(adj, LP_W*input*degree) * degree + (1-aggr_factor) * input
-        #
-        # final_h = aggr_factor * (torch.div(matmul(a_sparse, new_h), a_sparse_sum_rowwise)) + (1-aggr_factor) * new_h
+        # tmp = torch.ones(N, 1).cuda()-LP_W
+        # final_h = matmul(adj, self.LPW_new*input*degree) * degree
 
-        # if self.need_norm:
-        #     # batch normalization
-        #     final_h = self.bn(final_h)
-        # # test
-        # if self.thickness != 3:
-        #     # 若不是最后一层
-        #     final_h = F.relu(final_h, inplace=True)
-        #     final_h = F.dropout(final_h, self.dropout, training=self.training)
 
-        # new_h_mini = torch.mm(final_h, self.W_2mini) + self.B_2mini
         new_h_mini = self.Linear_2mini(final_h)
         #杂乱程度
         adj_sparse_sum_rowwise = matmul(adj, torch.ones(N, 1).cuda(), reduce='sum')
@@ -193,6 +165,8 @@ class GPSDepthAttentionLayer(nn.Module):
 
 
         return final_h, factor_res_2hop
+        # return final_h, torch.ones(N, 1).cuda()
+
 
     def __repr__(self):
         return (
@@ -212,7 +186,7 @@ class GPSDepth(nn.Module):
         # fmt: off
         parser.add_argument("--num-features", type=int)
         parser.add_argument("--num-classes", type=int)
-        parser.add_argument("--hidden-size", type=int, default=256)
+        parser.add_argument("--hidden-size", type=int, default=128)
         parser.add_argument("--dropout", type=float, default=0.5)
         parser.add_argument("--alpha", type=float, default=0.2)
         parser.add_argument("--nheads", type=int, default=1)
@@ -250,14 +224,14 @@ class GPSDepth(nn.Module):
         nn.init.xavier_normal_(self.linear_before.weight, gain=1.414)
         nn.init.constant_(self.linear_before.bias, 0)
 
-        self.LPW = nn.Parameter(torch.ones(size=(self.N, 1)))
+        # self.LPW = nn.Parameter(torch.ones(size=(self.N, 1)))
         self.LP_alpha = 0.5
 
 
         # 第一层： in: nfeat; out: nhid，即参数中的hidden-size
         self.attentions.append([
             [GPSDepthAttentionLayer(
-                nhid, nhid, attention_size=self.attention_size,  dropout=dropout, alpha=alpha, concat=True, thickness=1, GPU=self.GPU, need_norm=True
+                nhid, nhid, N=self.N, attention_size=self.attention_size,  dropout=dropout, alpha=alpha, concat=True, thickness=1, GPU=self.GPU, need_norm=True
             ) for __ in range(self.subheads)]
             for _ in range(nheads)
         ])
@@ -266,7 +240,7 @@ class GPSDepth(nn.Module):
         for i in range(layers - 2):
             self.attentions.append([
                 [GPSDepthAttentionLayer(
-                    nhid, nhid, attention_size=self.attention_size, dropout=dropout, alpha=alpha, concat=True, thickness=i + 2, GPU=self.GPU, need_norm=True
+                    nhid, nhid, N=self.N, attention_size=self.attention_size, dropout=dropout, alpha=alpha, concat=True, thickness=i + 2, GPU=self.GPU, need_norm=True
                 ) for __ in range(self.subheads)]
                 for _ in range(nheads)
             ])
@@ -274,7 +248,7 @@ class GPSDepth(nn.Module):
         # 第n层： in: nhid * 每种感受野内部的subhead数; out: nclass,即类别数
         self.attentions.append([
             [GPSDepthAttentionLayer(
-                nhid, nclass, attention_size=self.attention_size, dropout=dropout, alpha=alpha, concat=True, thickness=layers, GPU=self.GPU, need_norm=False
+                nhid, nclass, N=self.N, attention_size=self.attention_size, dropout=dropout, alpha=alpha, concat=True, thickness=layers, GPU=self.GPU, need_norm=False
             ) for __ in range(self.subheads)]
             for _ in range(nheads)
         ])
@@ -291,6 +265,7 @@ class GPSDepth(nn.Module):
         nn.init.xavier_normal_(self.linear_after2.weight, gain=1.414)
         nn.init.constant_(self.linear_after2.bias, 0)
 
+        self.LPWs = [nn.Parameter(torch.ones(size=(N, 1)).cuda()) for i in range(layers)]
 
     def forward(self, x, adj, edges, degree, iftrain, label):
         # adj: sparse tensor
@@ -306,13 +281,12 @@ class GPSDepth(nn.Module):
 
         degree = torch.unsqueeze(degree, dim=1)
         # D ^ -1
-
-
+        # print(self.LPW.unsqueeze(1)[torch.Tensor([349,357,366,169185, 169261, 169296]).long()])
 
         for layer in range(self.layers):
             LP_degree = degree * degree
             # breakpoint()
-            new_label = self.LPW * label
+            new_label = self.LPWs[layer] * label
             new_label = matmul(adj, new_label)
             new_label = LP_degree * new_label
             new_label = self.LP_alpha * label + (1 - self.LP_alpha) * new_label
@@ -320,13 +294,14 @@ class GPSDepth(nn.Module):
             # breakpoint()
             new_label = torch.div(new_label, new_label_sum)
             label = new_label
+
             # head: 感受野不同，最后一层cat起来
             for number_attention in range(self.heads):
                 # subhead: 共享感受野，但attention的W矩阵不同
                 for number_subattention in range(self.subheads):
                     ytmp, aggr_factors_tmp = \
                         self.attentions[layer][number_attention][number_subattention](y[number_attention],
-                                                                                      adj, aggr_factors[number_attention], edges, adj_sparse_sum_rowwise, degree, iftrain, self.LPW.data)
+                                                                                      adj, aggr_factors[number_attention], edges, adj_sparse_sum_rowwise, degree, iftrain, self.LPWs[layer])
                     aggr_factors[number_attention] = aggr_factors[number_attention] * aggr_factors_tmp
                     # aggr_factors[number_attention] = aggr_factors_tmp
                     # print(ytmp.shape)
@@ -349,6 +324,7 @@ class GPSDepth(nn.Module):
 
         x = torch.stack(y)
         x = x.sum(0)
+
         return F.log_softmax(x, dim=1), label
 
     def loss(self, datax, datay, train_mask, adj_sparse, edges, degree, label, label_train_x, label_train_y):
@@ -364,7 +340,7 @@ class GPSDepth(nn.Module):
         #     new_label[label_train_y],
         #     datay[label_train_y]
         # ))
-        # breakpoint()
+
         return F.nll_loss(
             pre_x[train_mask],
             datay[train_mask]
@@ -372,6 +348,10 @@ class GPSDepth(nn.Module):
             new_label[label_train_y],
             datay[label_train_y]
         )
+        # return F.nll_loss(
+        #     pre_x[train_mask],
+        #     datay[train_mask]
+        # )
 
     def predict(self, datax, adj_sparse, edges, degree, label):
         return self.forward(datax, adj_sparse, edges, degree, False, label)[0]

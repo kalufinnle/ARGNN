@@ -19,7 +19,6 @@ class data():
         self.num_features = node_attr.size()[1]
         self.num_classes = torch.max(self.y).item()+1 # count from 0
         self.N = node_attr.size()[0]
-        self.node_label = torch.zeros(size=(self.N, self.num_classes))
         self.train_mask = np.zeros(self.N, dtype=bool)
         self.valid_mask = np.zeros(self.N, dtype=bool)
         self.test_mask = np.zeros(self.N, dtype=bool)
