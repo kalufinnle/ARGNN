@@ -5,6 +5,7 @@ from ogb.nodeproppred import PygNodePropPredDataset
 from tqdm import tqdm
 import argparse
 from gps_depth.gps_depth import GPSDepth
+from gps_depth.labels_pro import LP
 import torch.nn.functional as F
 from torch_sparse import SparseTensor
 
@@ -18,18 +19,36 @@ class data():
         self.num_features = node_attr.size()[1]
         self.num_classes = torch.max(self.y).item()+1 # count from 0
         self.N = node_attr.size()[0]
+        self.node_label = torch.zeros(size=(self.N, self.num_classes))
         self.train_mask = np.zeros(self.N, dtype=bool)
         self.valid_mask = np.zeros(self.N, dtype=bool)
         self.test_mask = np.zeros(self.N, dtype=bool)
+        self.train_idx = train_idx
         self.train_mask[train_idx] = True
         self.test_mask[test_idx] = True
         self.valid_mask[valid_idx] = True
         self.train_mask = torch.from_numpy(self.train_mask)
         self.valid_mask = torch.from_numpy(self.valid_mask)
         self.test_mask = torch.from_numpy(self.test_mask)
+        self.node_label = torch.nn.functional.one_hot(self.y, self.num_classes)
+        # for i in range(self.N):
+        #     self.node_label[i][self.y[i]] = 1
+        # self.degree = torch.ones(self.N)
+        # for i in range(self.edges.size()[1]):
+        #     self.degree[self.edges[0][i]] += 1
+        #     self.degree[self.edges[1][i]] += 1
+        # self.degree = torch.pow(self.degree, -0.5)
+        degree = [1 for _ in range(self.N)]
+        for i in range(self.edges.size()[1]):
+            degree[self.edges[0][i]] += 1
+            degree[self.edges[1][i]] += 1
+        self.degree = torch.tensor(degree).float()
+        self.degree = torch.pow(self.degree, -0.5)
 
     def apply(self, param):
         # for x in self.
+        self.node_label = param(self.node_label)
+        self.train_idx = param(self.train_idx)
         self.node_attr = param(self.node_attr)
         self.y = param(self.y)
         self.edges = param(self.edges)
@@ -37,6 +56,7 @@ class data():
         self.train_mask = param(self.train_mask)
         self.valid_mask = param(self.valid_mask)
         self.test_mask = param(self.test_mask)
+        self.degree = param(self.degree)
         pass
 
 def build_dataset_ogb(dataset):
@@ -64,18 +84,23 @@ class NodeClassification():
 
         args.num_features = dataset.num_features
         args.num_classes = dataset.num_classes
+        args.N = dataset.node_attr.size()[0]
+        self.layers = args.layers
+
 
         print("build")
-        
+
         model = GPSDepth.build_model_from_args(args)
         self.model = model.to(self.device)
+
         self.patience = args.patience
         self.max_epoch = args.max_epoch
 
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=args.lr, weight_decay=args.weight_decay
         )
-        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.98)
+
+        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.985)
         print("2222")
         #sample from the adj matrix to adj list 
         self.adj_sparse, self.edges = self.construct_adj(self.data.edges, self.data.node_attr.size()[0])
@@ -123,15 +148,27 @@ class NodeClassification():
     def _train_step(self):
         self.model.train()
         self.optimizer.zero_grad()
-        loss = self.model.loss(self.data.node_attr, self.data.y, self.data.train_mask, self.adj_sparse, self.edges)
+        random_mask = np.random.randint(2, size=self.data.train_idx.size()[0])
+        label_train_x = torch.from_numpy(np.nonzero(random_mask)[0]).cuda()
+        label_train_x = self.data.train_idx[label_train_x]
+        label_train_y = torch.from_numpy(np.nonzero(1 - random_mask)[0]).cuda()
+        label_train_y = self.data.train_idx[label_train_y]
+
+
+
+        loss = self.model.loss(self.data.node_attr, self.data.y,
+                               self.data.train_mask, self.adj_sparse, self.edges,
+                               self.data.degree, self.data.node_label,
+                               label_train_x, label_train_y)
+
         loss.backward()
         self.optimizer.step()
-        self.scheduler.step()
+        # self.scheduler.step()
 
     def _test_step(self, split="val"):
         self.model.eval()
         #the result of of the model
-        logits = self.model.predict(self.data.node_attr, self.adj_sparse, self.edges)
+        logits = self.model.predict(self.data.node_attr, self.adj_sparse, self.edges, self.data.degree, self.data.node_label)
         if split == "train":
             mask = self.data.train_mask
         elif split == "val":
@@ -170,23 +207,27 @@ class NodeClassification():
             bi_edge.append([edge[1], edge[0]])
             bi_edge_cnt += 2
 
+        for n in range(N):
+            bi_edge.append([n, n])
+
         bi_edge = torch.LongTensor(bi_edge).t()
 
         return SparseTensor.from_edge_index(edge_index=bi_edge, sparse_sizes=torch.Size([N, N])), bi_edge
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="gps args")  # fmt: off
 
-    parser.add_argument("--layers", type=int, default=2, help='the layers number')
+    parser.add_argument("--layers", type=int, default=3, help='the layers number')
     parser.add_argument("--dataset", type=str, default="ogbn_arxiv", help='chose a dataset')
     parser.add_argument('--cpu', action='store_true', help='use CPU instead of CUDA')
-    parser.add_argument('--max-epoch', default=1000, type=int)
+    parser.add_argument('--max-epoch', default=2000, type=int)
     parser.add_argument("--patience", type=int, default=100)
-    parser.add_argument('--lr', default=0.001, type=float)
+    parser.add_argument('--lr', default=0.01, type=float)
     parser.add_argument('--weight-decay', default=0, type=float)
     parser.add_argument('--device-id', default=[0], type=int, nargs='+',
                         help='which GPU to use')
-    parser.add_argument("--hidden-size", type=int, default=64)
+    parser.add_argument("--hidden-size", type=int, default=128)
     parser.add_argument("--dropout", type=float, default=0.5)
     parser.add_argument("--alpha", type=float, default=0.2, help='alpha in leakyrelu')
     parser.add_argument("--nheads", type=int, default=1, help='head number')
