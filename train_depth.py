@@ -8,6 +8,9 @@ from gps_depth.gps_depth import GPSDepth
 from gps_depth.labels_pro import LP
 import torch.nn.functional as F
 from torch_sparse import SparseTensor
+from torch.utils.tensorboard import SummaryWriter
+
+# default `log_dir` is "runs" - we'll be more specific here
 
 
 class data():
@@ -108,7 +111,7 @@ class NodeClassification():
             self.edges = self.edges.cuda()
         self.max_valid_acc = 0
 
-    def train(self):
+    def train(self, writer:SummaryWriter):
         epoch_iter = tqdm(range(self.max_epoch))
         patience = 0
         best_score = 0
@@ -117,9 +120,18 @@ class NodeClassification():
         min_loss = np.inf
         max_valid_acc = 0
         for epoch in epoch_iter:
+
             self._train_step()
-            train_acc, _ = self._test_step(split="train")
+            train_acc, train_loss = self._test_step(split="train")
+
+
             val_acc, val_loss = self._test_step(split="val")
+
+            writer.add_scalar('training acc',train_acc,epoch)
+            writer.add_scalar('training loss',train_loss,epoch)
+            writer.add_scalar('valid acc', val_acc, epoch)
+            writer.add_scalar('valid loss', val_loss, epoch)
+
             epoch_iter.set_description(
                 f"Epoch: {epoch:03d}, Train: {train_acc:.4f}, Val: {val_acc:.4f}, Val Loss:{val_loss:.4f}"
             )
@@ -197,6 +209,7 @@ class NodeClassification():
         node N is the additional node which do not exist in the graph to satisfy degree requirement     
         every node has a self-loop
         '''
+
         tmp_edges = adj_list.cpu().numpy().T.tolist()
         bi_edge = []
         bi_edge_cnt = 0
@@ -217,7 +230,7 @@ class NodeClassification():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="gps args")  # fmt: off
 
-    parser.add_argument("--layers", type=int, default=3, help='the layers number')
+    parser.add_argument("--layers", type=int, default=5, help='the layers number')
     parser.add_argument("--dataset", type=str, default="ogbn_arxiv", help='chose a dataset')
     parser.add_argument('--cpu', action='store_true', help='use CPU instead of CUDA')
     parser.add_argument('--max-epoch', default=2000, type=int)
@@ -232,11 +245,16 @@ if __name__ == "__main__":
     parser.add_argument("--nheads", type=int, default=1, help='head number')
     parser.add_argument("--attention_hid", type=int, default=1, help='attention head number')
     parser.add_argument("--max-degree", type=int, default=10)
+    parser.add_argument("--name", type=str, help="tensorboard name")
+
+
 
     args = parser.parse_args()
+    writer = SummaryWriter(f"runs/{args.name}")
+
     if torch.cuda.is_available() and not args.cpu:
         torch.cuda.set_device(args.device_id[0])
     my_model = NodeClassification(args)
-    my_model.train()
+    my_model.train(writer)
     # fmt: on
     pass
