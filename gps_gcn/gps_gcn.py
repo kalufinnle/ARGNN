@@ -100,70 +100,70 @@ class GPSDepthAttentionLayer(nn.Module):
         # aggr_factor：(N, ) tensor. float
         # --------------------------------------------------------------------------------
         N = input.size()[0]
-        adjust_input = LP_W * input
-        final_h = self.conv(adjust_input, adj)
-        # final_h = self.conv(input, adj)
-        final_h = aggr_factor * final_h + (1-aggr_factor) * input
-
-        new_h_mini = self.Linear_2mini(final_h)
-        #杂乱程度
-        adj_sparse_sum_rowwise = matmul(adj, torch.ones(N, 1).cuda(), reduce='sum')
-        avg_nei_feature = torch.div(matmul(adj, new_h_mini), adj_sparse_sum_rowwise)
-        left_feature = torch.index_select(avg_nei_feature, 0, edges[0])
-        right_feature = torch.index_select(new_h_mini, 0, edges[1])
-        distance = F.pairwise_distance(left_feature, right_feature)
-        distance_adj = SparseTensor.from_edge_index(edge_index=edges, edge_attr=distance, sparse_sizes=torch.Size([N, N])).cuda()
-        distance_2 = matmul(distance_adj, torch.ones(N, 1).cuda(), reduce='mean')
-        new_h_mini = torch.cat((new_h_mini, distance_2), dim=1)
-
-        # get aggre_factor for next layer
-        h_src = torch.index_select(new_h_mini, 0, edges[0])
-        h_dst = torch.index_select(new_h_mini, 0, edges[1])
-        h_diff = torch.abs(h_dst - h_src)
-        factor_cal = torch.cat((h_src, h_dst, h_diff), 1)
-        factor_cal = self.linear_factor1(factor_cal)
-        # factor_cal = factor_cal.div(self.out_features)
-        factor_cal = F.tanh(factor_cal)
-        factor_cal = self.linear_factor2(factor_cal)
-        # factor_cal = factor_cal.div(self.out_features)
-        factor_cal_0 = F.sigmoid(factor_cal).squeeze()
-        # if iftrain:
-        #     print("factor_cal_0")
-        #     print(factor_cal_0[0:30])
-
-        new_h_mini = self.Linear_2mini(input)
-        adj_sparse_sum_rowwise = matmul(adj, torch.ones(N, 1).cuda(), reduce='sum')
-        avg_nei_feature = torch.div(matmul(adj, new_h_mini), adj_sparse_sum_rowwise)
-        left_feature = torch.index_select(avg_nei_feature, 0, edges[0])
-        right_feature = torch.index_select(new_h_mini, 0, edges[1])
-        distance = F.pairwise_distance(left_feature, right_feature)
-        distance_adj = SparseTensor.from_edge_index(edge_index=edges, edge_attr=distance, sparse_sizes=torch.Size([N, N])).cuda()
-        distance_2 = matmul(distance_adj, torch.ones(N, 1).cuda(), reduce='mean')
-        new_h_mini = torch.cat((new_h_mini, distance_2), dim=1)
-
-        h_src = torch.index_select(new_h_mini, 0, edges[0])
-        h_dst = torch.index_select(new_h_mini, 0, edges[1])
-        h_src = h_src + self.attention_bias
-        h_dst = h_dst + self.attention_bias
-        # print("bias", self.attention_bias)
-        factor_cal = torch.cat((h_src, h_dst, h_diff), 1)
-        factor_cal = self.linear_factor1(factor_cal)
-        # factor_cal = factor_cal.div(self.out_features)
-        factor_cal = F.tanh(factor_cal)
-        factor_cal = self.linear_factor2(factor_cal)
-        # factor_cal = factor_cal.div(self.out_features)
-        factor_cal_1 = F.sigmoid(factor_cal).squeeze()
-        # if iftrain:
-        #     print("factor_cal_1")
-        #     print(factor_cal_1[0:30])
-
-        factor_cal_sparse_0 = SparseTensor.from_edge_index(edge_index=edges, edge_attr=factor_cal_0, sparse_sizes=torch.Size([N, N])).cuda()
-        factor_cal_sparse_1 = SparseTensor.from_edge_index(edge_index=edges, edge_attr=factor_cal_1, sparse_sizes=torch.Size([N, N])).cuda()
-        factor_res_1hop = matmul(factor_cal_sparse_1, torch.ones(N, 1).cuda(), reduce='mean')
-        factor_res_2hop = matmul(factor_cal_sparse_0, factor_res_1hop, reduce='mean')
-
-        return final_h, factor_res_2hop
-        # return final_h, torch.ones(N, 1).cuda()
+        # adjust_input = LP_W * input
+        # final_h = self.conv(adjust_input, adj)
+        final_h = self.conv(input, adj)
+        # final_h = aggr_factor * final_h + (1-aggr_factor) * input
+        #
+        # new_h_mini = self.Linear_2mini(final_h)
+        # #杂乱程度
+        # adj_sparse_sum_rowwise = matmul(adj, torch.ones(N, 1).cuda(), reduce='sum')
+        # avg_nei_feature = torch.div(matmul(adj, new_h_mini), adj_sparse_sum_rowwise)
+        # left_feature = torch.index_select(avg_nei_feature, 0, edges[0])
+        # right_feature = torch.index_select(new_h_mini, 0, edges[1])
+        # distance = F.pairwise_distance(left_feature, right_feature)
+        # distance_adj = SparseTensor.from_edge_index(edge_index=edges, edge_attr=distance, sparse_sizes=torch.Size([N, N])).cuda()
+        # distance_2 = matmul(distance_adj, torch.ones(N, 1).cuda(), reduce='mean')
+        # new_h_mini = torch.cat((new_h_mini, distance_2), dim=1)
+        #
+        # # get aggre_factor for next layer
+        # h_src = torch.index_select(new_h_mini, 0, edges[0])
+        # h_dst = torch.index_select(new_h_mini, 0, edges[1])
+        # h_diff = torch.abs(h_dst - h_src)
+        # factor_cal = torch.cat((h_src, h_dst, h_diff), 1)
+        # factor_cal = self.linear_factor1(factor_cal)
+        # # factor_cal = factor_cal.div(self.out_features)
+        # factor_cal = F.tanh(factor_cal)
+        # factor_cal = self.linear_factor2(factor_cal)
+        # # factor_cal = factor_cal.div(self.out_features)
+        # factor_cal_0 = F.sigmoid(factor_cal).squeeze()
+        # # if iftrain:
+        # #     print("factor_cal_0")
+        # #     print(factor_cal_0[0:30])
+        #
+        # new_h_mini = self.Linear_2mini(input)
+        # adj_sparse_sum_rowwise = matmul(adj, torch.ones(N, 1).cuda(), reduce='sum')
+        # avg_nei_feature = torch.div(matmul(adj, new_h_mini), adj_sparse_sum_rowwise)
+        # left_feature = torch.index_select(avg_nei_feature, 0, edges[0])
+        # right_feature = torch.index_select(new_h_mini, 0, edges[1])
+        # distance = F.pairwise_distance(left_feature, right_feature)
+        # distance_adj = SparseTensor.from_edge_index(edge_index=edges, edge_attr=distance, sparse_sizes=torch.Size([N, N])).cuda()
+        # distance_2 = matmul(distance_adj, torch.ones(N, 1).cuda(), reduce='mean')
+        # new_h_mini = torch.cat((new_h_mini, distance_2), dim=1)
+        #
+        # h_src = torch.index_select(new_h_mini, 0, edges[0])
+        # h_dst = torch.index_select(new_h_mini, 0, edges[1])
+        # h_src = h_src + self.attention_bias
+        # h_dst = h_dst + self.attention_bias
+        # # print("bias", self.attention_bias)
+        # factor_cal = torch.cat((h_src, h_dst, h_diff), 1)
+        # factor_cal = self.linear_factor1(factor_cal)
+        # # factor_cal = factor_cal.div(self.out_features)
+        # factor_cal = F.tanh(factor_cal)
+        # factor_cal = self.linear_factor2(factor_cal)
+        # # factor_cal = factor_cal.div(self.out_features)
+        # factor_cal_1 = F.sigmoid(factor_cal).squeeze()
+        # # if iftrain:
+        # #     print("factor_cal_1")
+        # #     print(factor_cal_1[0:30])
+        #
+        # factor_cal_sparse_0 = SparseTensor.from_edge_index(edge_index=edges, edge_attr=factor_cal_0, sparse_sizes=torch.Size([N, N])).cuda()
+        # factor_cal_sparse_1 = SparseTensor.from_edge_index(edge_index=edges, edge_attr=factor_cal_1, sparse_sizes=torch.Size([N, N])).cuda()
+        # factor_res_1hop = matmul(factor_cal_sparse_1, torch.ones(N, 1).cuda(), reduce='mean')
+        # factor_res_2hop = matmul(factor_cal_sparse_0, factor_res_1hop, reduce='mean')
+        #
+        # return final_h, factor_res_2hop
+        return final_h, torch.ones(N, 1).cuda()
 
     def __repr__(self):
         return (
@@ -303,18 +303,18 @@ class GPSGCN(nn.Module):
         # ))
         # print(pre_x[train_mask][1, ])
 
-        return F.nll_loss(
-            pre_x[train_mask],
-            datay[train_mask]
-        ) + F.nll_loss(
-            new_label[label_train_y],
-            datay[label_train_y]
-        )
-
         # return F.nll_loss(
         #     pre_x[train_mask],
         #     datay[train_mask]
+        # ) + F.nll_loss(
+        #     new_label[label_train_y],
+        #     datay[label_train_y]
         # )
+
+        return F.nll_loss(
+            pre_x[train_mask],
+            datay[train_mask]
+        )
 
     def predict(self, datax, adj_sparse, edges, degree, label):
         return self.forward(datax, adj_sparse, edges, degree, False, label)[0]
