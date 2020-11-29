@@ -159,7 +159,8 @@ class NodeClassification():
     def _train_step(self):
         self.model.train()
         self.optimizer.zero_grad()
-        random_mask = np.random.randint(2, size=self.data.train_idx.size()[0])
+        random_mask = np.random.randint(3, size=self.data.train_idx.size()[0])
+        random_mask = np.fmin(random_mask, 1)
         label_train_x = torch.from_numpy(np.nonzero(random_mask)[0]).cuda()
         label_train_x = self.data.train_idx[label_train_x]
         label_train_y = torch.from_numpy(np.nonzero(1 - random_mask)[0]).cuda()
@@ -179,7 +180,8 @@ class NodeClassification():
     def _test_step(self, split="val"):
         self.model.eval()
         #the result of of the model
-        logits = self.model.predict(self.data.node_attr, self.adj_sparse, self.edges, self.data.degree, self.data.node_label)
+        label_train_x = self.data.train_idx
+        logits = self.model.predict(self.data.node_attr, self.adj_sparse, self.edges, self.data.degree, self.data.node_label, label_train_x)
         if split == "train":
             mask = self.data.train_mask
         elif split == "val":
